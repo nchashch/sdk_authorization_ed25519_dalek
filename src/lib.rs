@@ -10,8 +10,12 @@ pub struct Authorization {
 
 impl GetAddress for Authorization {
     fn get_address(&self) -> Address {
-        Address::from(hash(&self.public_key.to_bytes()))
+        get_address(&self.public_key)
     }
+}
+
+pub fn get_address(public_key: &PublicKey) -> Address {
+    Address::from(hash(&public_key.to_bytes()))
 }
 
 pub fn verify_authorizations<C: Clone + Serialize>(

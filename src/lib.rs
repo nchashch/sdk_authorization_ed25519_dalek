@@ -22,18 +22,28 @@ pub fn verify_authorizations<C: Clone + Serialize>(
     body: &Body<Authorization, C>,
 ) -> Result<(), Error> {
     let capacity: usize = body.authorizations.len();
-    let mut messages = Vec::with_capacity(capacity);
     let mut signatures = Vec::with_capacity(capacity);
     let mut public_keys = Vec::with_capacity(capacity);
-
-    for (transaction, authorization) in body.transactions.iter().zip(body.authorizations.iter()) {
-        let message = bincode::serialize(&transaction)?;
-        messages.push(message);
+    for authorization in &body.authorizations {
         signatures.push(authorization.signature);
         public_keys.push(authorization.public_key);
     }
-    let messages: Vec<&[u8]> = messages.iter().map(|message| message.as_slice()).collect();
-
+    let input_numbers = body
+        .transactions
+        .iter()
+        .map(|transaction| transaction.inputs.len());
+    let serialized_transactions: Vec<Vec<u8>> = body
+        .transactions
+        .iter()
+        .map(bincode::serialize)
+        .collect::<Result<_, _>>()?;
+    let serialized_transactions = serialized_transactions.iter().map(Vec::as_slice);
+    let messages: Vec<&[u8]> = input_numbers
+        .zip(serialized_transactions)
+        .flat_map(|(input_number, serialized_transaction)| {
+            std::iter::repeat(serialized_transaction).take(input_number)
+        })
+        .collect();
     ed25519_dalek::verify_batch(
         messages.as_slice(),
         signatures.as_slice(),

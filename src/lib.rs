@@ -1,5 +1,5 @@
 pub use ed25519_dalek::{Keypair, PublicKey, Signature, SignatureError, Signer};
-use sdk_types::{hash, Address, GetAddress, Transaction};
+use sdk_types::{hash, Address, AuthorizedTransaction, Body, GetAddress, Transaction};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,28 +19,18 @@ pub fn get_address(public_key: &PublicKey) -> Address {
 }
 
 pub fn verify_authorizations<C: Clone + Serialize>(
-    transactions: &[Transaction<Authorization, C>],
+    body: &Body<Authorization, C>,
 ) -> Result<(), Error> {
-    let capacity: usize = transactions
-        .iter()
-        .map(|transaction| transaction.authorizations.len())
-        .sum();
-
+    let capacity: usize = body.authorizations.len();
     let mut messages = Vec::with_capacity(capacity);
     let mut signatures = Vec::with_capacity(capacity);
     let mut public_keys = Vec::with_capacity(capacity);
 
-    for transaction in transactions {
-        let transaction_without_authorizations = Transaction {
-            authorizations: vec![],
-            ..transaction.clone()
-        };
-        let message = hash(&transaction_without_authorizations);
-        for authorization in &transaction.authorizations {
-            messages.push(message);
-            signatures.push(authorization.signature);
-            public_keys.push(authorization.public_key);
-        }
+    for (transaction, authorization) in body.transactions.iter().zip(body.authorizations.iter()) {
+        let message = bincode::serialize(&transaction)?;
+        messages.push(message);
+        signatures.push(authorization.signature);
+        public_keys.push(authorization.public_key);
     }
     let messages: Vec<&[u8]> = messages.iter().map(|message| message.as_slice()).collect();
 
@@ -54,10 +44,10 @@ pub fn verify_authorizations<C: Clone + Serialize>(
 
 pub fn authorize<C: Clone + Serialize>(
     addresses_keypairs: &[(Address, &Keypair)],
-    transaction: Transaction<Authorization, C>,
-) -> Result<Transaction<Authorization, C>, Error> {
+    transaction: Transaction<C>,
+) -> Result<AuthorizedTransaction<Authorization, C>, Error> {
     let mut authorizations: Vec<Authorization> = Vec::with_capacity(addresses_keypairs.len());
-    let transaction_hash_without_authorizations = hash(&transaction);
+    let message = bincode::serialize(&transaction)?;
     for (address, keypair) in addresses_keypairs {
         let hash_public_key = Address::from(hash(&keypair.public.to_bytes()));
         if *address != hash_public_key {
@@ -68,13 +58,13 @@ pub fn authorize<C: Clone + Serialize>(
         }
         let authorization = Authorization {
             public_key: keypair.public,
-            signature: keypair.sign(&transaction_hash_without_authorizations),
+            signature: keypair.sign(&message),
         };
         authorizations.push(authorization);
     }
-    Ok(Transaction {
+    Ok(AuthorizedTransaction {
         authorizations,
-        ..transaction
+        transaction,
     })
 }
 
@@ -89,4 +79,6 @@ pub enum Error {
     },
     #[error("ed25519_dalek error")]
     DalekError(#[from] SignatureError),
+    #[error("bincode error")]
+    BincodeError(#[from] bincode::Error),
 }

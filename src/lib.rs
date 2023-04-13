@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authorization {
-    public_key: PublicKey,
-    signature: Signature,
+    pub public_key: PublicKey,
+    pub signature: Signature,
 }
 
 impl GetAddress for Authorization {

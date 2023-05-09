@@ -1,4 +1,5 @@
-pub use ed25519_dalek::{Keypair, PublicKey, Signature, SignatureError, Signer};
+pub use ed25519_dalek::{Keypair, PublicKey, Signature, SignatureError, Signer, Verifier};
+use rayon::prelude::*;
 use sdk_types::{hash, Address, AuthorizedTransaction, Body, GetAddress, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -18,38 +19,32 @@ pub fn get_address(public_key: &PublicKey) -> Address {
     Address::from(hash(&public_key.to_bytes()))
 }
 
-pub fn verify_authorizations<C: Clone + Serialize>(
+pub fn verify_authorizations<C: Clone + Serialize + Sync>(
     body: &Body<Authorization, C>,
-) -> Result<(), Error> {
-    let capacity: usize = body.authorizations.len();
-    let mut signatures = Vec::with_capacity(capacity);
-    let mut public_keys = Vec::with_capacity(capacity);
-    for authorization in &body.authorizations {
-        signatures.push(authorization.signature);
-        public_keys.push(authorization.public_key);
-    }
+) -> Result<bool, Error> {
     let input_numbers = body
         .transactions
         .iter()
         .map(|transaction| transaction.inputs.len());
     let serialized_transactions: Vec<Vec<u8>> = body
         .transactions
-        .iter()
+        .par_iter()
         .map(bincode::serialize)
         .collect::<Result<_, _>>()?;
     let serialized_transactions = serialized_transactions.iter().map(Vec::as_slice);
-    let messages: Vec<&[u8]> = input_numbers
+    let messages = input_numbers
         .zip(serialized_transactions)
         .flat_map(|(input_number, serialized_transaction)| {
             std::iter::repeat(serialized_transaction).take(input_number)
         })
-        .collect();
-    ed25519_dalek::verify_batch(
-        messages.as_slice(),
-        signatures.as_slice(),
-        public_keys.as_slice(),
-    )?;
-    Ok(())
+        .zip(body.authorizations.iter())
+        .collect::<Vec<_>>();
+    Ok(messages.par_iter().all(|(message, authorization)| {
+        authorization
+            .public_key
+            .verify(message, &authorization.signature)
+            .is_ok()
+    }))
 }
 
 pub fn authorize<C: Clone + Serialize>(

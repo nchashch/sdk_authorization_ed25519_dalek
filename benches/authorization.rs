@@ -49,8 +49,8 @@ pub fn random_transaction(num_inputs: usize, num_outputs: usize) -> AuthorizedTr
 }
 
 pub fn random_body(num_transactions: usize, num_coinbase_outputs: usize) -> Body {
-    const NUM_INPUTS: usize = 10;
-    const NUM_OUTPUTS: usize = 10;
+    const NUM_INPUTS: usize = 2;
+    const NUM_OUTPUTS: usize = 2;
     let transactions = (0..num_transactions)
         .map(|_| random_transaction(NUM_INPUTS, NUM_OUTPUTS))
         .collect::<Vec<_>>();
@@ -62,7 +62,7 @@ pub fn random_body(num_transactions: usize, num_coinbase_outputs: usize) -> Body
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     // const NUM_TRANSACTIONS: usize = 1_200_000;
-    const NUM_TRANSACTIONS: usize = 100;
+    const NUM_TRANSACTIONS: usize = 600;
     const NUM_COINBASE_OUTPUTS: usize = 0;
     let body = random_body(NUM_TRANSACTIONS, NUM_COINBASE_OUTPUTS);
     c.bench_function("verify_authorizations", |b| b.iter(|| verify_authorizations(black_box(&body))));

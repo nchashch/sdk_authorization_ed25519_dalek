@@ -19,6 +19,12 @@ pub fn get_address(public_key: &PublicKey) -> Address {
     Address::from(hash(&public_key.to_bytes()))
 }
 
+struct Package<'a> {
+    messages: Vec<&'a [u8]>,
+    signatures: Vec<Signature>,
+    public_keys: Vec<PublicKey>,
+}
+
 pub fn verify_authorizations<C: Clone + Serialize + Sync>(
     body: &Body<Authorization, C>,
 ) -> Result<bool, Error> {
@@ -32,19 +38,51 @@ pub fn verify_authorizations<C: Clone + Serialize + Sync>(
         .map(bincode::serialize)
         .collect::<Result<_, _>>()?;
     let serialized_transactions = serialized_transactions.iter().map(Vec::as_slice);
-    let messages = input_numbers
-        .zip(serialized_transactions)
-        .flat_map(|(input_number, serialized_transaction)| {
+    let messages = input_numbers.zip(serialized_transactions).flat_map(
+        |(input_number, serialized_transaction)| {
             std::iter::repeat(serialized_transaction).take(input_number)
-        })
-        .zip(body.authorizations.iter())
-        .collect::<Vec<_>>();
-    Ok(messages.par_iter().all(|(message, authorization)| {
-        authorization
-            .public_key
-            .verify(message, &authorization.signature)
-            .is_ok()
-    }))
+        },
+    );
+
+    let pairs = body.authorizations.iter().zip(messages).collect::<Vec<_>>();
+
+    let num_threads = rayon::current_num_threads();
+    let num_authorizations = body.authorizations.len();
+    let package_size = num_authorizations / num_threads;
+    let mut packages: Vec<Package> = Vec::with_capacity(num_threads);
+    for i in 0..num_threads {
+        let mut package = Package {
+            messages: Vec::with_capacity(package_size),
+            signatures: Vec::with_capacity(package_size),
+            public_keys: Vec::with_capacity(package_size),
+        };
+        for (authorization, message) in &pairs[i * package_size..(i + 1) * package_size] {
+            package.messages.push(*message);
+            package.signatures.push(authorization.signature);
+            package.public_keys.push(authorization.public_key);
+        }
+        packages.push(package);
+    }
+    for (authorization, message) in &pairs[num_threads * package_size..] {
+        packages[num_threads - 1].messages.push(*message);
+        packages[num_threads - 1]
+            .signatures
+            .push(authorization.signature);
+        packages[num_threads - 1]
+            .public_keys
+            .push(authorization.public_key);
+    }
+    assert_eq!(
+        packages.iter().map(|p| p.signatures.len()).sum::<usize>(),
+        body.authorizations.len()
+    );
+    Ok(packages.par_iter().all(
+        |Package {
+             messages,
+             signatures,
+             public_keys,
+         }| ed25519_dalek::verify_batch(messages, signatures, public_keys).is_ok(),
+    ))
 }
 
 pub fn authorize<C: Clone + Serialize>(

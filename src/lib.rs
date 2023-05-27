@@ -25,9 +25,29 @@ struct Package<'a> {
     public_keys: Vec<PublicKey>,
 }
 
+pub fn verify_authorized_transaction<C: Clone + Serialize + Sync>(
+    transaction: &AuthorizedTransaction<Authorization, C>,
+) -> Result<bool, Error> {
+    let serialized_transaction = bincode::serialize(&transaction.transaction)?;
+    let messages: Vec<_> = std::iter::repeat(serialized_transaction.as_slice())
+        .take(transaction.authorizations.len())
+        .collect();
+    let (public_keys, signatures): (Vec<PublicKey>, Vec<Signature>) = transaction
+        .authorizations
+        .iter()
+        .map(
+            |Authorization {
+                 public_key,
+                 signature,
+             }| (public_key, signature),
+        )
+        .unzip();
+    Ok(ed25519_dalek::verify_batch(&messages, &signatures, &public_keys).is_ok())
+}
+
 pub fn verify_authorizations<C: Clone + Serialize + Sync>(
     body: &Body<Authorization, C>,
-) -> Result<bool, Error> {
+) -> Result<(), Error> {
     let input_numbers = body
         .transactions
         .iter()
@@ -76,13 +96,25 @@ pub fn verify_authorizations<C: Clone + Serialize + Sync>(
         packages.iter().map(|p| p.signatures.len()).sum::<usize>(),
         body.authorizations.len()
     );
-    Ok(packages.par_iter().all(
+    let valid = packages.par_iter().all(
         |Package {
              messages,
              signatures,
              public_keys,
          }| ed25519_dalek::verify_batch(messages, signatures, public_keys).is_ok(),
-    ))
+    );
+    if !valid {
+        return Err(Error::InvalidSignature);
+    }
+    Ok(())
+}
+
+pub fn sign<C: Clone + Serialize>(
+    keypair: &Keypair,
+    transaction: &Transaction<C>,
+) -> Result<Signature, Error> {
+    let message = bincode::serialize(&transaction)?;
+    Ok(keypair.sign(&message))
 }
 
 pub fn authorize<C: Clone + Serialize>(
@@ -124,4 +156,6 @@ pub enum Error {
     DalekError(#[from] SignatureError),
     #[error("bincode error")]
     BincodeError(#[from] bincode::Error),
+    #[error("invalid signature")]
+    InvalidSignature,
 }

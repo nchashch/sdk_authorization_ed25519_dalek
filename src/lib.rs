@@ -1,6 +1,6 @@
 pub use ed25519_dalek::{Keypair, PublicKey, Signature, SignatureError, Signer, Verifier};
 use rayon::prelude::*;
-use sdk_types::{hash, Address, AuthorizedTransaction, Body, GetAddress, Transaction};
+use plain_types::{hash, Address, AuthorizedTransaction, Body, GetAddress, Transaction, Verify};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -12,6 +12,25 @@ pub struct Authorization {
 impl GetAddress for Authorization {
     fn get_address(&self) -> Address {
         get_address(&self.public_key)
+    }
+}
+
+impl<C: Clone + Serialize + for<'de> Deserialize<'de> + Send + Sync> Verify<C> for Authorization {
+    type Error = Error;
+    fn verify_transaction(transaction: &AuthorizedTransaction<Self, C>) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        verify_authorized_transaction(transaction)?;
+        Ok(())
+    }
+
+    fn verify_body(body: &Body<Self, C>) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        verify_authorizations(body)?;
+        Ok(())
     }
 }
 
@@ -27,7 +46,7 @@ struct Package<'a> {
 
 pub fn verify_authorized_transaction<C: Clone + Serialize + Sync>(
     transaction: &AuthorizedTransaction<Authorization, C>,
-) -> Result<bool, Error> {
+) -> Result<(), Error> {
     let serialized_transaction = bincode::serialize(&transaction.transaction)?;
     let messages: Vec<_> = std::iter::repeat(serialized_transaction.as_slice())
         .take(transaction.authorizations.len())
@@ -42,7 +61,8 @@ pub fn verify_authorized_transaction<C: Clone + Serialize + Sync>(
              }| (public_key, signature),
         )
         .unzip();
-    Ok(ed25519_dalek::verify_batch(&messages, &signatures, &public_keys).is_ok())
+    ed25519_dalek::verify_batch(&messages, &signatures, &public_keys)?;
+    Ok(())
 }
 
 pub fn verify_authorizations<C: Clone + Serialize + Sync>(
@@ -96,16 +116,16 @@ pub fn verify_authorizations<C: Clone + Serialize + Sync>(
         packages.iter().map(|p| p.signatures.len()).sum::<usize>(),
         body.authorizations.len()
     );
-    let valid = packages.par_iter().all(
-        |Package {
-             messages,
-             signatures,
-             public_keys,
-         }| ed25519_dalek::verify_batch(messages, signatures, public_keys).is_ok(),
-    );
-    if !valid {
-        return Err(Error::InvalidSignature);
-    }
+    packages
+        .par_iter()
+        .map(
+            |Package {
+                 messages,
+                 signatures,
+                 public_keys,
+             }| ed25519_dalek::verify_batch(messages, signatures, public_keys),
+        )
+        .collect::<Result<(), SignatureError>>()?;
     Ok(())
 }
 
@@ -156,6 +176,4 @@ pub enum Error {
     DalekError(#[from] SignatureError),
     #[error("bincode error")]
     BincodeError(#[from] bincode::Error),
-    #[error("invalid signature")]
-    InvalidSignature,
 }
